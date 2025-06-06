@@ -1,0 +1,293 @@
+---
+title: 'Sander Lab: MSMC figures from WGS resequencing data'
+author: "Al"
+date: "`r format(Sys.Date(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+---
+
+```{r opt-chunk-settings}
+knitr::opts_chunk$set(
+    message = FALSE, 
+    warning = FALSE,
+    error = FALSE,
+    fig.height = 10, 
+    fig.width = 10
+)
+```
+
+```{r libraries}
+suppressPackageStartupMessages({
+    library(tidyverse)
+    library(here)
+    library(fs)
+    library(paletteer)
+    library(grid)
+})
+```
+
+This document contains MSMC figures for all available resequencing data that
+has been generated in the Sanders Lab. Samples have been aligned to their "best"
+reference genome, which is detailed in the file `data/aln-reference-genomes.csv`.
+The code used to format the data and generate the figures is in this document.
+
+## Plotting function
+
+Custom functions for visualising MSMC curves.
+
+```{r plotting-functions}
+# palette names from paletteer package
+plot_msmc_single <- function(
+        msmc, 
+        max_ne = 1e6, 
+        clock = "2*2+25*1+2*3",
+        groups,
+        col_pal, # names of palettes - same length as groups.
+        colour_by = "Species"
+) {
+    if(length(groups) != length(col_pal)) {
+        stop("Group and palette lengths are different.")
+    }
+    
+    dat <- msmc |>
+        filter(Ne <= max_ne, clock == clock, grp %in% groups)
+    
+    if(length(unique(dat$sample)) != 1) {
+        # Assign colours to each sample
+        pal <- map2(groups, col_pal, function(g, p) {
+            vals <- msmc |> filter(grp == g) |> pull({{colour_by}}) |> unique()
+            pal <- paletteer_d(p)
+
+            # Trim grey colour from <colour>_material palettes
+            if(str_detect(p, "material")) {
+                pal <- pal[2:length(pal)]
+            }
+
+            # Gradient colour if n-samples > 9
+            if(length(vals) > 9) {
+                pal <- colorRampPalette(pal)(length(vals))
+            }
+
+            pal <- pal[seq_along(vals)]
+            names(pal) <- vals
+            pal
+        }) |> unlist()
+    } else {
+        pal <- paletteer_d(col_pal)[1]
+    }
+
+    # Make the plot
+    plot_msmc <- dat |>
+        ggplot(
+            aes(
+                x = Years, y = Ne,
+                colour = .data[[colour_by]],
+                linetype = lt
+            )
+        ) +
+        geom_step(linewidth = 1) +
+        scale_colour_manual(values = pal) +
+        annotation_custom(
+            grob = grobTree(
+                rectGrob(
+                    x = 0.8, y = 0.89, width = 0.25, height = 0.06,
+                    gp = gpar(fill = "white", col = "black")
+                ),
+                textGrob(
+                    glue::glue("Ne filter: < {max_ne}"),
+                    x = 0.9, y = 0.9, just = c("right", "top"),
+                    gp = gpar(col = "black", fontsize = 11)
+                )
+            )
+        ) +
+        scale_x_log10(labels = scales::label_number(scale = 1e-6)) +
+        annotation_logticks(sides = 'b', outside = TRUE, ) +
+        coord_cartesian(clip = "off" ) +
+        scale_y_continuous(labels = scales::label_number(scale = 1e-6)) +
+        labs(
+            y = bquote("Effective population size "~(N[e]~x~10^6)),
+            x = bquote("Years ago (x10"^6*')')
+        ) +
+        guides(linetype = 'none') +
+        theme_classic() +
+        theme(
+            axis.title = element_text(size = 18),
+            axis.text = element_text(size = 16),
+            axis.text.x = element_text(vjust = -1),
+            strip.text = element_text(size = 18),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.border = element_blank(),
+            panel.background = element_blank(),
+            axis.line = element_line(colour = "black", linewidth = 0.7)
+        )
+
+    if(length(pal) > 16) {
+        plot_msmc <- plot_msmc +
+            theme(legend.position = "none")
+    } else {
+        plot_msmc <- plot_msmc +
+            theme(
+                legend.position = "bottom",
+                legend.text = element_text(size = 16, face = "italic"),
+                legend.title = element_blank(),
+                legend.key.size = unit(1, "cm"),
+            )
+    }
+
+    plot_msmc
+}
+```
+
+## Load MSMC files
+
+MSMC was run on each sample independently, generating both a complete run and
+bootstrapped results. Data are scaled using $\mu=4.71\text{e}^{-9}$ and a
+generation time of 10 years.
+
+```{r load-msmc}
+# Scaling parameters
+mu <- 4.71e-9
+gen <- 10
+
+# MSMC results main run
+df_msmc <- dir_ls(
+    path = here("results", "psmc"),
+    glob = "*bootstrap*",
+    recurse = TRUE,
+    invert = TRUE
+) |>
+    read_tsv(col_names = TRUE, col_types = cols(), id = 'tmp') |>
+    separate(col = tmp, into = c("tmp", 'clock'), sep = "__") |>
+    mutate(
+        tmp = basename(tmp),
+        clock = str_remove(clock, '.final.txt'),
+        clock = str_replace_all(clock, '_', "*"),
+        clock = str_replace_all(clock, "-", '+'),
+        Years = (left_time_boundary/mu)*gen,
+        Ne = (1/lambda)/(2*mu)
+    ) |>
+    separate(col = tmp, into = c("Species", 'sample'), sep = "-") |>
+    arrange(Species, sample, time_index) |>
+    mutate(Species = forcats::fct_inorder(Species)) |>
+    mutate(
+        lt = as.numeric(factor(sample, levels = unique(sample))),
+        .by = Species
+    ) |>
+    mutate(
+        lt = forcats::fct_inorder(as.character(lt)),
+        grp = case_when(
+            str_starts(Species, "A|E") ~ "Aipysurus",
+            str_starts(Species, "Hy") ~ "Hydrelapse",
+            str_starts(Species, "H") ~ "Hydrophis",
+            .default = "Remainder"
+        )
+    )
+```
+
+```{r load-msmc-bootstrap}
+# MSMC results (bootstrap)
+df_msmc_bootstrap <- dir_ls(
+    path = here("results", "psmc"),
+    glob = "*bootstrap*",
+    recurse = TRUE
+) |>
+    (\(x) x[!is_file_empty(x)])() |>
+    read_tsv(col_names = TRUE, col_types = cols(), id = 'tmp') |>
+    separate(col = tmp, into = c("tmp", 'clock'), sep = "__") |>
+    mutate(
+        tmp = basename(tmp),
+        clock = str_remove(clock, '.final.txt'),
+        clock = str_replace_all(clock, '_', "*"),
+        clock = str_replace_all(clock, "-", '+'),
+        Years = (left_time_boundary/mu)*gen,
+        Ne = (1/lambda)/(2*mu)
+    ) |>
+    separate(col = tmp, into = c("Species", 'sample'), sep = "-", extra = "merge") |>
+    separate(sample, into = c("sample", "bootstrap"), sep = "-bootstrap_", convert = TRUE) |>
+    arrange(Species, sample, bootstrap, time_index) |>
+    mutate(Species = forcats::fct_inorder(Species)) |>
+    mutate(
+        lt = as.numeric(factor(sample, levels = unique(sample))),
+        .by = Species
+    ) |>
+    mutate(
+        lt = forcats::fct_inorder(as.character(lt)),
+        grp = case_when(
+            str_starts(Species, "A|E") ~ "Aipysurus",
+            str_starts(Species, "Hy") ~ "Hydrelapse",
+            str_starts(Species, "H") ~ "Hydrophis",
+            .default = "Remainder"
+        )
+    )
+```
+
+## PSMC figures {.tabset}
+
+Please observed in the figure what $\text{N}_{\text{e}}$ filter was applied to the
+data to filter out spurious estimates that swamp the signal. Line type (i.e.
+solid, dotted, dashed etc...) represent different samples within the same grouping
+variable.
+
+### Aipysurus
+
+```{r msmc-aipysurus}
+plot_msmc_single(
+    msmc = df_msmc, 
+    groups = c("Aipysurus"), 
+    col_pal = c("PrettyCols::Bold"),
+    colour_by = "Species"
+)
+```
+
+### Hydrophis
+
+```{r msmc-hydrophis}
+plot_msmc_single(
+    msmc = df_msmc, 
+    groups = c("Hydrophis"), 
+    col_pal = c("ggthemes::Classic_Cyclic"),
+    colour_by = "Species"
+)
+```
+
+
+### Hydrelapse
+
+```{r msmc-hydrelapse}
+plot_msmc_single(
+    msmc = df_msmc, 
+    groups = c("Hydrelapse"), 
+    col_pal = "PrettyCols::Bold",
+    colour_by = "Species"
+)
+```
+
+
+### Remainder
+
+```{r msmc-remainder}
+plot_msmc_single(
+    msmc = df_msmc, 
+    groups = c("Remainder"), 
+    col_pal = "tvthemes::AirNomads",
+    colour_by = "Species"
+)
+```
+
+
+<!-- ### All -->
+
+<!-- ```{r msmc-all} -->
+<!-- plot_msmc_single( -->
+<!--     msmc = df_msmc,  -->
+<!--     groups = c("Aipysurus", "Remainder", "Hydrelapse", "Hydrophis"),  -->
+<!--     col_pal = c("MoMAColors::Exter", "ggsci::indigo_material", "ggsci::green_material", "rcartocolor::Burg"), -->
+<!--     colour_by = "Species" -->
+<!-- ) -->
+<!-- ``` -->
+
+
