@@ -1,5 +1,6 @@
 ---
 title: 'Sander Lab: MSMC figures from WGS resequencing data'
+subtitle: https://github.com/a-lud/msmc-sea-snakes
 author: "Al"
 date: "`r format(Sys.Date(), '%d %B, %Y')`"
 output:
@@ -33,6 +34,8 @@ This document contains MSMC figures for all available resequencing data that
 has been generated in the Sanders Lab. Samples have been aligned to their "best"
 reference genome, which is detailed in the file `data/aln-reference-genomes.csv`.
 The code used to format the data and generate the figures is in this document.
+
+The `.Rmd` file and data are available from the link in the header.
 
 ## Plotting function
 
@@ -93,7 +96,7 @@ plot_msmc_single <- function(
         annotation_custom(
             grob = grobTree(
                 rectGrob(
-                    x = 0.8, y = 0.89, width = 0.25, height = 0.06,
+                    x = 0.82, y = 0.89, width = 0.25, height = 0.06,
                     gp = gpar(fill = "white", col = "black")
                 ),
                 textGrob(
